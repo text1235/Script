@@ -29,7 +29,7 @@ jobs:
 
     - name: Generate JSON
       run: |
-        python .github/scripts/generate_image_json.py
+        python .github/script/generate_image_json.py
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
