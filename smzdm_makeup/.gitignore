@@ -1,0 +1,5 @@
+node_modules/
+.smzdm_makeup_state/
+*.lock
+.env
+*.log

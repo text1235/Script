@@ -1,0 +1,16 @@
+{
+  "name": "smzdm-makeup-queue",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SMZDM multi-account makeup queue with bounded card use",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "dependencies": {
+    "got": "11.8.6"
+  }
+}

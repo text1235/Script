@@ -1,0 +1,27 @@
+const assert=require('node:assert/strict');
+const {step}=require('../smzdm_makeup.js');
+const status=(date='2026-10-07',before=1,cards=84)=>({error_code:'0',data:{fix_date:date,before_checkin_num:String(before),after_checkin_num:String(before+1),left_fix_num:String(cards)}});
+const options={apply:true,accounts:[3],accountIds:['mock_account_3'],batch:'TEST_ONLY',maxCards:2,earliestDate:''};
+(async()=>{
+  let fixed=0,saved=0,queried=0;
+  const deps={now:()=>1000000,query:async()=>{queried++;return fixed?status('2026-10-06',2,83):status();},fix:async()=>{fixed++;return {error_code:'0'};},save:async()=>{saved++;}};
+  const dry=await step({...options,apply:false},null,deps);
+  assert.equal(dry.report.cards_used,0);assert.equal(fixed,0);assert.equal(saved,0);
+  await assert.rejects(()=>step({...options,maxCards:0},null,deps));assert.equal(fixed,0);
+  const one=await step(options,null,deps);assert.equal(one.state.confirmed,1);assert.equal(fixed,1);assert.equal(one.state.pending,null);
+  const queriesBefore=queried;
+  const cooldown=await step(options,one.state,deps);assert.equal(cooldown.report.mode,'cooldown');assert.equal(fixed,1);assert.equal(queried,queriesBefore);
+  const limited=await step({...options,maxCards:1},{...one.state,max_attempts:1},deps);assert.equal(limited.report.mode,'budget_reached');assert.equal(fixed,1);
+  let rejectedFixes=0;
+  const deniedDeps={...deps,query:async()=>status(),fix:async()=>{rejectedFixes++;return {error_code:'429'};}};
+  const denied=await step(options,null,deniedDeps);assert.equal(denied.state.paused,true);assert.ok(denied.state.pending);
+  await step(options,denied.state,deniedDeps);assert.equal(rejectedFixes,1);
+  let ambiguousFixes=0;
+  const ambiguousDeps={...deps,query:async()=>status(),fix:async()=>{ambiguousFixes++;throw new Error('Simulated timeout');}};
+  const ambiguous=await step(options,null,ambiguousDeps);assert.equal(ambiguous.state.paused,true);assert.ok(ambiguous.state.pending);
+  await step(options,ambiguous.state,ambiguousDeps);assert.equal(ambiguousFixes,1);
+  const noAdvance=await step(options,null,{...deps,query:async()=>status(),fix:async()=>({error_code:'0'})});assert.equal(noAdvance.state.paused,true);assert.equal(noAdvance.state.confirmed,0);
+  await assert.rejects(()=>step({...options,accountIds:['different_account']},one.state,deps));
+  console.log('PASS: query-only mode; required budget; one-card limit; cooldown; total budget; frequency denial pause; timeout pause; no duplicate on unchanged status; account binding');
+  console.log('ALL NETWORK CALLS MOCKED; CARDS USED: 0');
+})().catch(()=>{console.error('Queue safety verification failed');process.exitCode=1;});
