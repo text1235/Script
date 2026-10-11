@@ -69,8 +69,9 @@ function validStatus(result) {
 }
 function noCards(result) {return String(result?.error_code)==='3' && /^没有补签卡/.test(result.error_msg || '') || String(result?.error_code)==='0' && String(result.data?.left_fix_num)==='0';}
 function profileDays(result) {if(String(result?.error_code)!=='0')return null;const row=result.data?.rows?.find(r=>String(r.cell_type)==='18001');const value=Number(row?.cell_data?.checkin_num);return Number.isFinite(value)&&value>=0?value:null;}
+function policyOf(options){return {earliestDate:options.earliestDate || ''};}
 function newState(options) {
-  return { batch:options.batch, account_ids:options.accountIds, account_limits:options.accountLimits || {}, per_account_attempts:{}, done_accounts:[], card_counts:{}, max_attempts:options.maxCards, attempts:0, confirmed:0, last_attempt_ms:0, paused:false, pending:null, cursor:0, history:[] };
+  return { batch:options.batch, account_ids:options.accountIds, account_limits:options.accountLimits || {}, per_account_attempts:{}, done_accounts:[], card_counts:{}, max_attempts:options.maxCards, attempts:0, confirmed:0, last_attempt_ms:0, paused:false, pending:null, cursor:0, history:[],policy:policyOf(options),streak_summary:{},done_reasons:{} };
 }
 async function step(options, state, deps) {
   if (!options.apply) {
@@ -80,6 +81,7 @@ async function step(options, state, deps) {
   }
   if(!options.batch || options.batch==='pending' || !Number.isInteger(options.maxCards) || options.maxCards<1 || options.maxCards>500 || !options.accounts.length) throw new Error('Explicit batch, selected accounts and positive card budget required');
   state=state || newState(options);
+  if(state.policy && JSON.stringify(state.policy)!==JSON.stringify(policyOf(options)))throw new Error('Policy changed; preserve prior state and account for its budget');
   if(JSON.stringify(state.account_limits || {})!==JSON.stringify(options.accountLimits || {})) throw new Error('Account budgets changed; review existing batch');
   if(state.batch!==options.batch || JSON.stringify(state.account_ids)!==JSON.stringify(options.accountIds) || state.max_attempts!==options.maxCards) throw new Error('Existing batch differs; review its state before creating another batch');
   if(state.paused || state.pending) return {state,report:{mode:'paused',reason:state.reason || 'Prior result uncertain; manual review required',attempts:state.attempts,confirmed:state.confirmed}};
@@ -97,10 +99,13 @@ async function step(options, state, deps) {
   if(account===undefined) return {state,report:{mode:'accounts_finished',attempts:state.attempts,confirmed:state.confirmed}};
   const rawStatus=await deps.query(account);
   const status=validStatus(rawStatus);
-  if(noCards(rawStatus) && !status) {state.done_accounts.push(account);state.card_counts[account]=0;state.cursor++;await deps.save(state);return {state,report:{mode:'account_finished',account_index:account,cards_left:0}};}
+  if(noCards(rawStatus) && !status) {
+    if(deps.profile){let days;try{days=profileDays(await deps.profile(account));}catch(_){}if(days!==null && days!==undefined){state.streak_summary ||= {};state.streak_summary[account] ||= {before:days,after:days,confirmed_cards:0};state.streak_summary[account].after=days;}}
+    state.done_accounts.push(account);state.card_counts[account]=0;state.cursor++;await deps.save(state);return {state,report:{mode:'account_finished',account_index:account,cards_left:0}};}
+  if(status){state.streak_summary ||= {};state.streak_summary[account] ||= {before:status.before_checkin_num,after:status.before_checkin_num,confirmed_cards:0};state.streak_summary[account].after=status.before_checkin_num;}
   if(status && (status.left_fix_num<1 || (options.earliestDate && status.fix_date<options.earliestDate))) {
-    state.done_accounts.push(account);state.card_counts[account]=status.left_fix_num;state.cursor++;await deps.save(state);
-    return {state,report:{mode:'account_finished',account_index:account,cards_left:status.left_fix_num}};
+    state.done_accounts.push(account);state.card_counts[account]=status.left_fix_num;state.done_reasons ||= {};state.done_reasons[account]=status.left_fix_num<1?'no_cards':'date_boundary';state.cursor++;await deps.save(state);
+    return {state,report:{mode:'account_finished',account_index:account,cards_left:status.left_fix_num,reason:state.done_reasons[account],next_eligible_date:status.fix_date}};
   }
   if(!status) {
     state.paused=true;state.reason='No eligible date/card, rejected status query, or date outside selected range';await deps.save(state);
@@ -131,15 +136,16 @@ async function step(options, state, deps) {
   let verified=next && next.fix_date!==status.fix_date && next.before_checkin_num>=status.after_checkin_num;
   if(!verified && noCards(after) && deps.profile) {
     let days;try {days=profileDays(await deps.profile(account));}catch(_){}
-    if(days!==null && days!==undefined && days>=status.after_checkin_num){verified=true;next={left_fix_num:0,fix_date:null};state.done_accounts.push(account);}
+    if(days!==null && days!==undefined && days>=status.after_checkin_num){verified=true;next={left_fix_num:0,fix_date:null,before_checkin_num:days};state.done_accounts.push(account);}
   }
-  state.history.push({account_index:account,date:status.fix_date,server_accepted:true,verified:Boolean(verified),at:new Date(now).toISOString()});
+  state.history.push({account_index:account,date:status.fix_date,server_accepted:true,verified:Boolean(verified),at:new Date(now).toISOString(),streak_before:status.before_checkin_num,streak_after:verified?next.before_checkin_num:null});
   if(!verified) {
     state.paused=true;state.reason='服务器接受了补签，但后续状态未完成核验；暂停以防重复扣卡';await deps.save(state);
     return {state,report:{mode:'paused',reason:state.reason,attempts:state.attempts,server_accepted:true}};
   }
+  state.streak_summary[account].after=next.before_checkin_num;state.streak_summary[account].confirmed_cards++;
   state.confirmed++;state.pending=null;state.cursor++;state.last_card_count=next.left_fix_num;state.card_counts[account]=next.left_fix_num;state.next_attempt_ms=deps.now()+delay;await deps.save(state);
-  return {state,report:{mode:'one_card_confirmed',account_index:account,date:status.fix_date,confirmed:state.confirmed,attempts:state.attempts,max_attempts:options.maxCards,next_eligible_date:next.fix_date}};
+  return {state,report:{mode:'one_card_confirmed',account_index:account,date:status.fix_date,streak_before:status.before_checkin_num,streak_after:next.before_checkin_num,streak_gain:next.before_checkin_num-status.before_checkin_num,confirmed:state.confirmed,attempts:state.attempts,max_attempts:options.maxCards,next_eligible_date:next.fix_date}};
 }
 async function runQueue(options,state,deps,onReport=()=>{}) {
   while(true) {
@@ -159,6 +165,7 @@ async function reconcile(options,state,deps) {
     if(days!==null && days>=pending.expected_continue_days){status={fix_date:null,before_checkin_num:days,left_fix_num:0};state.done_accounts ||= [];if(!state.done_accounts.includes(pending.account_index))state.done_accounts.push(pending.account_index);}
   }
   if(!status || status.fix_date===pending.date || status.before_checkin_num<pending.expected_continue_days)return {state,report:{mode:'paused',reason:'Read-only reconciliation inconclusive; no card request made'}};
+  state.streak_summary ||= {};state.streak_summary[pending.account_index] ||= {before:last.streak_before ?? null,after:null,confirmed_cards:0};state.streak_summary[pending.account_index].after=status.before_checkin_num;state.streak_summary[pending.account_index].confirmed_cards++;last.streak_after=status.before_checkin_num;
   last.verified=true;last.reconciled_at=new Date().toISOString();state.confirmed++;state.pending=null;state.paused=false;delete state.reason;state.cursor++;if(state.notification_attempted){state.notification_history ||= [];state.notification_history.push({accepted:state.notification_accepted,at:new Date().toISOString()});delete state.notification_attempted;delete state.notification_accepted;}
   state.card_counts ||= {};state.card_counts[pending.account_index]=status.left_fix_num;state.last_card_count=status.left_fix_num;await deps.save(state);
   return {state,report:{mode:'reconciled',account_index:pending.account_index,confirmed:state.confirmed,cards_left:status.left_fix_num,cards_requested:0}};
@@ -220,7 +227,7 @@ async function main() {
       result.state.notification_attempted=true;await save(result.state);
       try {
         if(!process.env.BARK_PUSH) throw new Error('Missing notification endpoint');
-        const body=`账号${accounts.join(',')}：本批确认补签${result.state.confirmed}天，尝试${result.state.attempts}/${options.maxCards}次。状态：${result.report.mode==='budget_reached'?'已达到用卡上限':result.report.mode==='accounts_finished'?'所有选中账号已完成或达到各自上限':result.state.reason || '已暂停'}。剩余卡数（最近已核验）：${JSON.stringify(result.state.card_counts || {})}。`;
+        const body=notificationBody(options,result);
         const response=await got.post(process.env.BARK_PUSH,{json:{title:'什么值得买补签队列结果',body,group:process.env.BARK_GROUP || 'qinglong'},retry:{limit:0},timeout:{request:15000},throwHttpErrors:false});
         result.state.notification_accepted=JSON.parse(response.body).code===200;await save(result.state);
         console.log(JSON.stringify({notification:'Bark',server_accepted:result.state.notification_accepted}));
@@ -229,5 +236,17 @@ async function main() {
     return result;
   } finally {if(lockFd!==undefined){fs.closeSync(lockFd);fs.unlinkSync(lockPath);}}
 }
-module.exports={step,runQueue,reconcile,profileDays,noCards,main,validStatus,MIN_INTERVAL_MS,MAX_INTERVAL_MS};
+function notificationBody(options,result) {
+ const s=result.state,lines=['状态：'+(result.report.mode==='paused'?'暂停，存在待复核结果':result.report.mode==='budget_reached'?'达到本批用卡上限':'本批结束')+'；已核验用卡 '+s.confirmed+' 张，尝试 '+s.attempts+'/'+options.maxCards+' 次。'];
+ for(const a of options.accounts){
+  const r=s.streak_summary?.[a],pending=s.pending?.account_index===a;
+  const days=r && Number.isFinite(r.after) ? r.after+' 天' : '未知';
+  const gain=r && Number.isFinite(r.before) && Number.isFinite(r.after) ? '，本批 '+r.before+' → '+r.after+' 天（增加 '+(r.after-r.before)+' 天）' : '';
+  lines.push('账号'+a+'：'+(pending?'最后核验连签 ':'补签后/当前连签 ')+days+gain+'；已核验用卡 '+(r?.confirmed_cards || 0)+' 张；剩余卡 '+(s.card_counts?.[a] ?? '未知')+' 张'+(pending?'；本笔结果待确认，禁止重复提交':'')+'。');
+ }
+ lines.push('旧日期是否继续补，由你决定：开启旧日期按钮继续按每周额度处理，关闭按钮切回最近七天。');
+ return lines.join('\n');
+}
+
+module.exports={notificationBody,SmzdmBot,form,getEnvCookies,policyOf,step,runQueue,reconcile,profileDays,noCards,main,validStatus,MIN_INTERVAL_MS,MAX_INTERVAL_MS};
 if(require.main===module) main().catch(()=>{console.error('补签队列已停止，请核对参数或状态；不会自动重试不明结果');process.exitCode=1;});

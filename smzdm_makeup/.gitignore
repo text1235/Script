@@ -3,3 +3,6 @@ node_modules/
 *.lock
 .env
 *.log
+
+.smzdm_makeup_auto/
+.test-tmp/
