@@ -25,3 +25,11 @@ test('changing buttons preserves weekly spending; pending and foreign identity b
 });
 
 test('notification reports verified streak days and does not claim an uncertain gain',()=>{const options={accounts:[1,2],maxCards:7},result={report:{mode:'paused'},state:{confirmed:1,attempts:2,pending:{account_index:2},card_counts:{1:2,2:1},streak_summary:{1:{before:90,after:120,confirmed_cards:1},2:{before:80,after:80,confirmed_cards:0}}}};const body=core.notificationBody(options,result);assert.ok(body.includes('90 → 120'));assert.ok(body.includes('30'));assert.ok(body.includes('最后核验'));assert.equal(body.includes('81 天'),false);});
+
+test('Bark layout keeps archived delivery options and reports total weekly usage',()=>{
+ const result={report:{mode:'accounts_finished'},state:{confirmed:1,attempts:1,card_counts:{1:0},streak_summary:{1:{before:90,after:91,confirmed_cards:1}}}};
+ const payload=core.notificationPayload({accounts:[1],maxCards:4,notificationMode:'forward',weeklyUsedOutsideBatch:3,weeklyMax:35},result,{BARK_GROUP:'qinglong',BARK_ARCHIVE:'1',BARK_LEVEL:'active'});
+ assert.equal(payload.title,'✅ 值得买补签 · +1天');assert.equal(payload.isArchive,'1');assert.equal(payload.level,'active');
+ assert.ok(payload.body.includes('\n👤 账号 1\n'));assert.ok(payload.body.includes('本周尝试 4 / 35 次'));assert.ok(payload.body.includes('🔓 旧日期：开启'));
+ assert.equal('url' in payload,false);assert.equal('minimum_gain' in payload,false);
+});

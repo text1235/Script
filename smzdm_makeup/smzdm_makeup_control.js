@@ -101,7 +101,7 @@ async function main(action='run'){
   atomic(path.join(e.root,'active-v2.json'),{batch,previous:active?.batch || null,settings:config});
   Object.assign(process.env,{SMZDM_BACKFILL_APPLY:'1',SMZDM_BACKFILL_LOOP:'1',SMZDM_BACKFILL_ACCOUNTS:e.accounts.join(','),SMZDM_BACKFILL_BATCH:batch,
    SMZDM_BACKFILL_MAX_CARDS:String(budget.maxCards),SMZDM_BACKFILL_LIMITS:e.accounts.map(a=>a+':'+budget.accountLimits[a]).join(','),SMZDM_BACKFILL_STATE_DIR:dir,
-   SMZDM_BACKFILL_EARLIEST_DATE:scope.earliestDate});
+   SMZDM_BACKFILL_EARLIEST_DATE:scope.earliestDate,SMZDM_MAKEUP_NOTIFICATION_MODE:config.mode,SMZDM_MAKEUP_WEEK_USED_OUTSIDE_BATCH:String(used.total-(current?.attempts || 0)),SMZDM_MAKEUP_NOTIFICATION_WEEKLY_MAX:String(e.total)});
   delete process.env.SMZDM_BACKFILL_MIN_GAIN;delete process.env.SMZDM_BACKFILL_GAIN_BEFORE_DATE;delete process.env.SMZDM_BACKFILL_RECONCILE;return await core.main();
  }finally{release();}
 }

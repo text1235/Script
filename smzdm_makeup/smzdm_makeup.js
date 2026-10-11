@@ -187,6 +187,9 @@ async function main() {
     return crypto.createHash('sha256').update(match ? match[1] : cookies[n-1]).digest('hex').slice(0,16);
   });
   const options={apply,loop:process.env.SMZDM_BACKFILL_LOOP==='1',accounts,accountIds,batch:process.env.SMZDM_BACKFILL_BATCH || 'pending',maxCards:Number(process.env.SMZDM_BACKFILL_MAX_CARDS || '0'),earliestDate:process.env.SMZDM_BACKFILL_EARLIEST_DATE || ''};
+  options.notificationMode=process.env.SMZDM_MAKEUP_NOTIFICATION_MODE || '';
+  options.weeklyUsedOutsideBatch=process.env.SMZDM_MAKEUP_WEEK_USED_OUTSIDE_BATCH===undefined?null:Number(process.env.SMZDM_MAKEUP_WEEK_USED_OUTSIDE_BATCH);
+  options.weeklyMax=process.env.SMZDM_MAKEUP_NOTIFICATION_WEEKLY_MAX===undefined?null:Number(process.env.SMZDM_MAKEUP_NOTIFICATION_WEEKLY_MAX);
   options.accountLimits={};
   if(process.env.SMZDM_BACKFILL_LIMITS) {
     for(const item of process.env.SMZDM_BACKFILL_LIMITS.split(',')) {
@@ -227,26 +230,44 @@ async function main() {
       result.state.notification_attempted=true;await save(result.state);
       try {
         if(!process.env.BARK_PUSH) throw new Error('Missing notification endpoint');
-        const body=notificationBody(options,result);
+        const payload=notificationPayload(options,result);
+        result.state.notification_display={title:payload.title,body:payload.body};result.state.notification_attempted_at=new Date().toISOString();await save(result.state);
         const response=await got.post(process.env.BARK_PUSH,{json:{title:'什么值得买补签队列结果',body,group:process.env.BARK_GROUP || 'qinglong'},retry:{limit:0},timeout:{request:15000},throwHttpErrors:false});
-        result.state.notification_accepted=JSON.parse(response.body).code===200;await save(result.state);
+        result.state.notification_accepted=response.statusCode>=200 && response.statusCode<300 && JSON.parse(response.body).code===200;await save(result.state);
         console.log(JSON.stringify({notification:'Bark',server_accepted:result.state.notification_accepted}));
       } catch(_) {console.log('Bark result notification failed; no further card use');}
     }
     return result;
   } finally {if(lockFd!==undefined){fs.closeSync(lockFd);fs.unlinkSync(lockPath);}}
 }
+
+function notificationGain(state){
+ return Object.values(state.streak_summary || {}).reduce((sum,r)=>sum+(Number.isFinite(r.before)&&Number.isFinite(r.after)?Math.max(0,r.after-r.before):0),0);
+}
 function notificationBody(options,result) {
- const s=result.state,lines=['状态：'+(result.report.mode==='paused'?'暂停，存在待复核结果':result.report.mode==='budget_reached'?'达到本批用卡上限':'本批结束')+'；已核验用卡 '+s.confirmed+' 张，尝试 '+s.attempts+'/'+options.maxCards+' 次。'];
+ const s=result.state,gain=notificationGain(s),pendingCount=Math.max(0,s.attempts-s.confirmed);
+ const lines=['🎟 本次确认 '+s.confirmed+' 张 · 连签合计 +'+gain+' 天'+(pendingCount?' · 待确认 '+pendingCount+' 笔':'')];
  for(const a of options.accounts){
   const r=s.streak_summary?.[a],pending=s.pending?.account_index===a;
-  const days=r && Number.isFinite(r.after) ? r.after+' 天' : '未知';
-  const gain=r && Number.isFinite(r.before) && Number.isFinite(r.after) ? '，本批 '+r.before+' → '+r.after+' 天（增加 '+(r.after-r.before)+' 天）' : '';
-  lines.push('账号'+a+'：'+(pending?'最后核验连签 ':'补签后/当前连签 ')+days+gain+'；已核验用卡 '+(r?.confirmed_cards || 0)+' 张；剩余卡 '+(s.card_counts?.[a] ?? '未知')+' 张'+(pending?'；本笔结果待确认，禁止重复提交':'')+'。');
+  const known=r && Number.isFinite(r.before)&&Number.isFinite(r.after);
+  const streak=known ? r.before+' → '+r.after+' 天（+'+(r.after-r.before)+' 天）' : r && Number.isFinite(r.after)?r.after+' 天':'未知';
+  lines.push('', '👤 账号 '+a, (pending?'⚠️ 最后核验 ':'⭐ 连签 ')+streak, '🎫 已用 '+(r?.confirmed_cards || 0)+' 张 · 剩余 '+(s.card_counts?.[a] ?? '未知')+' 张');
+  if(pending)lines.push('⏸ 本笔待核对，已停止用卡');
  }
- lines.push('旧日期是否继续补，由你决定：开启旧日期按钮继续按每周额度处理，关闭按钮切回最近七天。');
+ lines.push('');
+ if(Number.isInteger(options.weeklyUsedOutsideBatch)&&Number.isInteger(options.weeklyMax))lines.push('📊 本周尝试 '+(options.weeklyUsedOutsideBatch+s.attempts)+' / '+options.weeklyMax+' 次');
+ else lines.push('📊 本批尝试 '+s.attempts+' / '+options.maxCards+' 次');
+ const modes={forward:'🔓 旧日期：开启',recent:'🔒 旧日期：关闭',target:'🎯 补到指定日期'};
+ if(modes[options.notificationMode])lines.push(modes[options.notificationMode]);
+ if(result.report.mode==='paused')lines.push('⚠️ 结果需核对，请勿重复运行');
  return lines.join('\n');
 }
+function notificationPayload(options,result,env=process.env){
+ const paused=result.report.mode==='paused';
+ const payload={title:paused?'⚠️ 值得买补签暂停':'✅ 值得买补签 · +'+notificationGain(result.state)+'天',body:notificationBody(options,result),group:env.BARK_GROUP || 'qinglong'};
+ for(const [name,key]of [['BARK_ICON','icon'],['BARK_SOUND','sound'],['BARK_LEVEL','level'],['BARK_ARCHIVE','isArchive'],['BARK_URL','url']])if(env[name])payload[key]=env[name];
+ return payload;
+}
 
-module.exports={notificationBody,SmzdmBot,form,getEnvCookies,policyOf,step,runQueue,reconcile,profileDays,noCards,main,validStatus,MIN_INTERVAL_MS,MAX_INTERVAL_MS};
+module.exports={notificationPayload,notificationBody,SmzdmBot,form,getEnvCookies,policyOf,step,runQueue,reconcile,profileDays,noCards,main,validStatus,MIN_INTERVAL_MS,MAX_INTERVAL_MS};
 if(require.main===module) main().catch(()=>{console.error('补签队列已停止，请核对参数或状态；不会自动重试不明结果');process.exitCode=1;});

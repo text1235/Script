@@ -91,3 +91,4 @@ task text1235_Script_main/smzdm_makeup/smzdm_makeup.js
 独立账号上限、恢复方法和普通 Node.js 用法见 [详细说明](ADVANCED.md)。
 
 协议适配参考 [hex-ci/smzdm_script](https://github.com/hex-ci/smzdm_script)，许可证见 [LICENSE](LICENSE)。
+\n通知采用账号分组与短行排版：标题显示本次连签增幅，各账号显示补前→补后天数、用卡与剩余卡，本周额度另列。Bark沿用配置的分组、存档、时效、声音和图标。排版参考 [hex-ci/smzdm_script](https://github.com/hex-ci/smzdm_script) 的签到通知。\n
