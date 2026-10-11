@@ -232,7 +232,7 @@ async function main() {
         if(!process.env.BARK_PUSH) throw new Error('Missing notification endpoint');
         const payload=notificationPayload(options,result);
         result.state.notification_display={title:payload.title,body:payload.body};result.state.notification_attempted_at=new Date().toISOString();await save(result.state);
-        const response=await got.post(process.env.BARK_PUSH,{json:{title:'什么值得买补签队列结果',body,group:process.env.BARK_GROUP || 'qinglong'},retry:{limit:0},timeout:{request:15000},throwHttpErrors:false});
+        const response=await got.post(process.env.BARK_PUSH,{json:payload,retry:{limit:0},timeout:{request:15000},throwHttpErrors:false});
         result.state.notification_accepted=response.statusCode>=200 && response.statusCode<300 && JSON.parse(response.body).code===200;await save(result.state);
         console.log(JSON.stringify({notification:'Bark',server_accepted:result.state.notification_accepted}));
       } catch(_) {console.log('Bark result notification failed; no further card use');}

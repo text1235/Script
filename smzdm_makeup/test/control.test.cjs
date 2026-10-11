@@ -33,3 +33,14 @@ test('Bark layout keeps archived delivery options and reports total weekly usage
  assert.ok(payload.body.includes('\n👤 账号 1\n'));assert.ok(payload.body.includes('本周尝试 4 / 35 次'));assert.ok(payload.body.includes('🔓 旧日期：开启'));
  assert.equal('url' in payload,false);assert.equal('minimum_gain' in payload,false);
 });
+
+test('real main notification path passes the formatted payload to mocked Bark exactly once',async()=>{
+ const Module=require('node:module'),originalLoad=Module._load,priorEnv={...process.env},base=path.resolve('.test-tmp');fs.mkdirSync(base,{recursive:true});const dir=fs.mkdtempSync(path.join(base,'notify-')),calls=[];
+ try{
+  Object.assign(process.env,{SMZDM_COOKIE:'sess=fake;smzdm_id=mock;',SMZDM_BACKFILL_PRELOAD:path.join(dir,'missing.js'),SMZDM_BACKFILL_APPLY:'1',SMZDM_BACKFILL_LOOP:'1',SMZDM_BACKFILL_ACCOUNTS:'1',SMZDM_BACKFILL_BATCH:'MOCK_NOTIFICATION',SMZDM_BACKFILL_MAX_CARDS:'7',SMZDM_BACKFILL_LIMITS:'1:7',SMZDM_BACKFILL_STATE_DIR:dir,BARK_PUSH:'https://notify.example.test/mock',BARK_ARCHIVE:'1',BARK_LEVEL:'active',SMZDM_MAKEUP_NOTIFICATION_MODE:'forward'});
+  delete process.env.SMZDM_BACKFILL_RECONCILE;
+  const got={post:async(url,args)=>{calls.push(url);if(url.endsWith('/fix'))throw Error('Unexpected card use');if(url.endsWith('/fix_status'))return {statusCode:200,body:JSON.stringify({error_code:3,error_msg:'\u6ca1\u6709\u8865\u7b7e\u5361'})};if(url.endsWith('/show_view_v2'))return {statusCode:200,body:JSON.stringify({error_code:0,data:{rows:[{cell_type:18001,cell_data:{checkin_num:'90'}}]}})};assert.equal(url,'https://notify.example.test/mock');assert.equal(args.json.isArchive,'1');assert.equal(args.json.level,'active');assert.ok(args.json.body.includes('90'));assert.equal(args.json.title,core.notificationPayload({accounts:[1],maxCards:7},{state:{attempts:0,confirmed:0,streak_summary:{1:{before:90,after:90,confirmed_cards:0}}},report:{mode:'accounts_finished'}}).title);return {statusCode:200,body:JSON.stringify({code:200})};}};
+  Module._load=function(name,parent,isMain){return name==='got'?got:originalLoad.call(this,name,parent,isMain);};
+  const r=await core.main();assert.equal(r.state.notification_accepted,true);assert.equal(calls.filter(x=>x==='https://notify.example.test/mock').length,1);assert.equal(r.state.attempts,0);
+ }finally{Module._load=originalLoad;for(const k of Object.keys(process.env))if(!(k in priorEnv))delete process.env[k];Object.assign(process.env,priorEnv);if(dir.startsWith(base+path.sep))fs.rmSync(dir,{recursive:true});}
+});
