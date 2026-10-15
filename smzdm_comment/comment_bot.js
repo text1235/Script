@@ -13,11 +13,11 @@ const SIGN_KEY = 'apr1$AwP!wRRT$gJ/q.X24poeBInlUJC';
 
 const ZHUANZAI_AB = '';
 
-// �޷����豸�໹ԭ�ı��ؿ���ȡֵ����ȫ�°�װ�� APP ��Ϊһ��
+// 无法从设备侧还原的本地开关取值，与全新安装的 APP 行为一致
 const CREATE_CENTER_VIEW = '';
 const IS_INSTALL_ZHANGDAMA = '0';
 
-// APP �� HTTP Date ͷ��Ϊǩ��ʱ�䣬��ƫ��� 5 ���ӻ����»�ȡ
+// APP 用 HTTP Date 头作为签名时间，且偏差超过 5 分钟会重新获取
 const SERVER_TIME_URL = 'https://app-api.smzdm.com/get_server_time';
 const SERVER_TIME_MAX_AGE = 5 * 60 * 1000;
 
@@ -29,7 +29,7 @@ let serverTimeFetchedAt = 0;
 const reVersion = /(smzdm_android_V|smzdm\s|iphone_smzdmapp\/)([\d.]+)/i;
 const reRev = /rv:([\d.]+)/i;
 
-// request_key = 8 λ����� + �뼶ʱ���
+// request_key = 8 位随机数 + 秒级时间戳
 const requestKey = () => `${Math.floor(Math.random() * 90000000) + 10000000}${Math.floor(Date.now() / 1000)}`;
 
 const getServerTime = async () => {
@@ -38,7 +38,7 @@ const getServerTime = async () => {
   }
 
   try {
-    // APP ֱ�Ӷ� HTTP Date ͷ��������״̬�룬ȡ�����Ż��˱���ʱ��
+    // APP 直接读 HTTP Date 头，不关心状态码，取不到才回退本地时间
     const response = await got(SERVER_TIME_URL, {
       method: 'GET',
       throwHttpErrors: false,
@@ -56,7 +56,7 @@ const getServerTime = async () => {
     }
   }
   catch (error) {
-    console.log(`��ȡ������ʱ��ʧ�ܣ�ʹ�ñ���ʱ��: ${error.message}`);
+    console.log(`获取服务器时间失败，使用本地时间: ${error.message}`);
   }
 
   return serverTime || Date.now();
@@ -73,7 +73,7 @@ const parseJSON = (str) => {
 
 const removeTags = (str) => str.replace(/<[^<]+?>/g, '');
 
-// ���ӹ���������ǩ������
+// 添加公共参数并签名数据
 const signFormData = async (data) => {
   const newData = {
     weixin: 1,
@@ -95,7 +95,7 @@ const signFormData = async (data) => {
   };
 };
 
-// ����������
+// 公共请求函数
 const requestApi = async (url, inputOptions = {}) => {
   const options = { ...inputOptions };
 
@@ -176,7 +176,7 @@ const requestApi = async (url, inputOptions = {}) => {
   })
 };
 
-// APP ÿ���������Լ�ά�����ֶ��ؽ� Cookie��ȱʧ���ֶ���Ҫ����
+// APP 每次请求都用自己维护的字段重建 Cookie，缺失的字段需要补上
 const setCookie = (cookie, name, value) => {
   const re = new RegExp(`(^|;)\\s*${name}=[^;]+`, 'i');
 
@@ -187,7 +187,7 @@ const setCookie = (cookie, name, value) => {
   return `${cookie.replace(/;?\s*$/, ';')} ${name}=${encodeURIComponent(value)};`;
 };
 
-// APP ��������Щ��ʷ�ֶΣ������ᵼ�������� APP ��һ��
+// APP 不发送这些历史字段，保留会导致请求与 APP 不一致
 const removeCookie = (cookie, name) => {
   const re = new RegExp(`(^|;)\\s*${name}=[^;]+;?`, 'ig');
 
@@ -197,7 +197,7 @@ const removeCookie = (cookie, name) => {
 const getEnvCookies = () => {
   let cookies = [];
 
-  // �жϻ������������Ƿ��� cookie
+  // 判断环境变量里面是否有 cookie
   if (process.env.SMZDM_COOKIE) {
     if (process.env.SMZDM_COOKIE.indexOf('&') > -1) {
       cookies = process.env.SMZDM_COOKIE.split('&');
@@ -220,10 +220,10 @@ const randomDecimal = (min, max, decimal) => {
 };
 
 const wait = (minSecond, maxSecond) => {
-  // �������С������
+  // 生成随机小数秒数
   const randomSecond = randomDecimal(minSecond, maxSecond, 1000);
 
-  console.log(`�Ⱥ� ${minSecond}-${maxSecond}(${randomSecond}) ��`);
+  console.log(`等候 ${minSecond}-${maxSecond}(${randomSecond}) 秒`);
 
   return new Promise(resolve => setTimeout(resolve, randomSecond * 1000));
 };
@@ -245,7 +245,7 @@ class SmzdmBot {
     const match = this.cookie.match(/sess=(.*?);/);
     this.token = match ? match[1] : '';
 
-    // ���� cookie
+    // 处理 cookie
     this.androidCookie = this.cookie.replace('iphone', 'android').replace('iPhone', 'Android');
     this.androidCookie = setCookie(this.androidCookie, 'v', APP_VERSION);
     this.androidCookie = setCookie(this.androidCookie, 'device_smzdm_version_code', APP_VERSION_REV);
@@ -307,7 +307,7 @@ class SmzdmBot {
     return listing[Math.floor(Math.random() * listing.length)];
   }
 
-  // ����˳��
+  // 打乱顺序
   getShuffled(listing) {
     const result = listing.slice();
 
