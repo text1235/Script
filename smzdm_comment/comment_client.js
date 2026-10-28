@@ -129,12 +129,17 @@ class SmzdmCommentClient extends SmzdmBot {
     return requestApi(url, { ...options, headers: this.getHeaders() });
   }
 
-  async getCommentTask(id) {
+  async getCommentTasks() {
     const r = await this.request('https://user-api.smzdm.com/task/list_v2', { method: 'post' });
-    if (!r.isSuccess) return null;
+    if (!r.isSuccess) return [];
     const tasks = (r.data?.data?.rows || []).flatMap(row =>
       (row.cell_data?.activity_task?.default_list_v2 || []).flatMap(group => group.task_list || []));
-    const matches = tasks.filter(task => task.task_id === id && task.task_event_type === 'interactive.comment');
+    return tasks.filter(task => task.task_event_type === 'interactive.comment');
+  }
+
+  async getCommentTask(id) {
+    const tasks = await this.getCommentTasks();
+    const matches = tasks.filter(task => task.task_id === id);
     return matches.length === 1 ? matches[0] : null;
   }
 
@@ -150,6 +155,13 @@ class SmzdmCommentClient extends SmzdmBot {
   buildCommentContent(detail, variant = 0) {
     const title = String(detail.article_title || '');
     const rules = [
+      [/第六代骁龙8|骁龙.*超级至尊版/, [
+        '比起短时跑分，我更关心持续负载下的功耗和发热。想了解同样性能下，这代平台的能效提升在日常使用中是否明显？',
+        '平台性能提升之外，手机厂商的散热和调校也很关键。想请教一下，不同机型长时间游戏时的表现差距会有多大？',
+        '轻度使用和重度游戏对能效的要求不同。想进一步了解这代平台在日常应用里的耗电表现，是否也能受益于架构升级？',
+        '选手机时我会把续航和稳定性放在跑分前面。希望看到相同亮度、相同负载下的对比，能更直观地判断这代升级的价值。',
+        '峰值性能之外，连续使用后的帧率和机身温度更影响体验。想问这代平台的优势是否需要更大的散热面积才能发挥？'
+      ]],
       [/回音壁|后环绕/, [
         '后环绕的摆位很值得提前规划。想请教一下，沙发靠墙时放在两侧是否合适，还是需要留出后方距离？',
         '想进一步了解夜间使用的表现。低音炮音量调低后，对白清晰度和环绕效果是否还能兼顾？',
@@ -216,7 +228,7 @@ class SmzdmCommentClient extends SmzdmBot {
       let current = await this.getCommentTask(task.task_id);
       const target = Number(current?.task_even_num);
       let count = Number(current?.task_finished_num);
-      if (!current || !Number.isInteger(target) || target < 1 || target > 3 ||
+      if (!current || !Number.isInteger(target) || target < 1 || target > 20 ||
           !Number.isInteger(count) || count < 0 || count > target) return stop('任务进度无法核实，停止发布');
       const received = value => String(value?.is_received) === '1' && ['1', '4'].includes(String(value?.task_status));
       if (state.pending) {
@@ -241,6 +253,10 @@ class SmzdmCommentClient extends SmzdmBot {
         else return stop('上次评论已发布但未确认计入，保留评论并停止重复提交');
       }
       if (state.day !== day) { state = { day, attempts: 0, uncreditedComments: state.uncreditedComments || [], postedKeys: state.postedKeys || [] }; save(); }
+      if (state.blocked === '没有能匹配正文的评论文案，停止发布' && state.attempts === 0 && !state.pending && !state.awaitingCount) {
+        state.preflightRecovery = { reason: state.blocked, at: new Date().toISOString() };
+        state.blocked = null; save();
+      }
       const claim = async () => {
         if (received(current)) return { isSuccess: true, reason: `评论已核实 ${count}/${target}，奖励已领取` };
         if (current.task_status !== '3') return stop(`评论已核实 ${count}/${target}，奖励状态尚不可领取`);
@@ -266,7 +282,8 @@ class SmzdmCommentClient extends SmzdmBot {
       const articles = overrides || await owner.getCommentArticles(scope);
       if (!Array.isArray(articles) || !articles.length) return stop('未找到已核对的目标文章');
       const scopeKey = value => JSON.stringify([value.kind, value.id || '', value.channelId || '']);
-      const remaining = target - count;
+      const remaining = Math.min(target - count, maxAttempts - state.attempts);
+      if (remaining <= 0) return { isSuccess: false, reason: `评论进度 ${count}/${target}，本账号今日提交预算已用完` };
       let cursor = 0;
       for (let index = 0; index < remaining; index++) {
         if ((overrides || !automatic) && index >= articles.length) return stop('已核对的不同评论文案数量不足');
@@ -276,7 +293,7 @@ class SmzdmCommentClient extends SmzdmBot {
           detail = await this.getArticleDetail(id);
           if (!detail || String(detail.article_id) !== id) continue;
           if (scope.kind === 'general' && /评论有奖|抽奖|赢现金|有奖活动/.test(detail.article_title || '')) continue;
-          content = String(article.content || (automatic ? this.buildCommentContent(detail, parseInt(key.slice(0, 4), 16) + index) : process.env.SMZDM_COMMENT || ''));
+          content = String(article.content || (automatic ? this.buildCommentContent(detail, parseInt(key.slice(0, 4), 16) + state.attempts) : process.env.SMZDM_COMMENT || ''));
           if ((state.postedKeys || []).includes(crypto.createHash('sha256').update(id + '\n' + content).digest('hex'))) { content = ''; continue; }
           if (content.length > 10) break;
         }
@@ -312,7 +329,7 @@ class SmzdmCommentClient extends SmzdmBot {
         state.awaitingCount = null; save(); this.$env.log(`评论任务已核实 ${count}/${target}`);
         if (count === target) return await claim();
       }
-      return stop(`评论进度 ${count}/${target}，尚未完成`);
+      return { isSuccess: false, reason: `评论进度 ${count}/${target}，按每日提交预算分次完成` };
     }
     finally { cleanup(); process.removeListener('exit', cleanup); process.removeListener('SIGTERM', onTerminate); }
   }
