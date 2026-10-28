@@ -231,6 +231,11 @@ class SmzdmCommentClient extends SmzdmBot {
     let state = { day, attempts: 0 };
     const save = () => { const temp = file + '.tmp'; fs.writeFileSync(temp, JSON.stringify(state), { mode: 0o600 }); fs.renameSync(temp, file); };
     const stop = reason => { state.blocked = reason; save(); return { isSuccess: false, reason }; };
+    const retainSelfVisible = () => {
+      state.uncreditedComments = [...(state.uncreditedComments || []), { ...state.awaitingCount, outcome: 'confirmed_self_visible_not_credited', checked_at: new Date().toISOString() }];
+      state.awaitingCount = null; state.blocked = null; save();
+      this.$env.log('评论已核实仅自己可见，保留记录并改用其他文章，不重复原评论');
+    };
     try {
       if (fs.existsSync(file)) state = JSON.parse(fs.readFileSync(file, 'utf8'));
       const maxAttempts = options.maxAttempts === undefined ? Infinity : Number(options.maxAttempts);
@@ -247,6 +252,11 @@ class SmzdmCommentClient extends SmzdmBot {
       }
       if (state.awaitingCount) {
         if (state.day === day && state.awaitingCount.task_id === current.task_id && count > state.awaitingCount.before) { state.awaitingCount = null; state.blocked = null; save(); }
+        else if (state.awaitingCount.task_id === current.task_id && process.env.SMZDM_COMMENT_AUTO === 'true' &&
+            owner.commentTaskScope(current, '').kind === 'general' &&
+            await this.getPublicCommentVisibility(state.awaitingCount.article_id, state.awaitingCount.comment_id) === 1) {
+          retainSelfVisible();
+        }
         else if (options.reconcileSelfVisible?.comment_id === state.awaitingCount.comment_id &&
             await this.getPublicCommentVisibility(options.reconcileSelfVisible.article_id, state.awaitingCount.comment_id) === 1) {
           state.reconciled = { ...state.awaitingCount, outcome: 'confirmed_self_visible_not_credited', checked_at: new Date().toISOString() };
@@ -299,7 +309,7 @@ class SmzdmCommentClient extends SmzdmBot {
       const remaining = Math.min(target - count, maxAttempts - state.attempts);
       if (remaining <= 0) return { isSuccess: false, reason: `评论进度 ${count}/${target}，本账号今日提交预算已用完` };
       let cursor = 0;
-      for (let index = 0; index < remaining; index++) {
+      for (let index = 0; count < target; index++) {
         if ((overrides || !automatic) && index >= articles.length) return stop('已核对的不同评论文案数量不足');
         let article, id, detail, content;
         for (let checked = 0; checked < articles.length; checked++) {
@@ -308,6 +318,7 @@ class SmzdmCommentClient extends SmzdmBot {
           if (!detail || !/^[a-zA-Z0-9]+$/.test(String(detail.article_id || ''))) continue;
           if (scope.kind === 'article' && String(detail.article_id) !== id) continue;
           id = String(detail.article_id);
+          if ((state.uncreditedComments || []).some(comment => String(comment.article_id) === id)) continue;
           if (scope.kind === 'general' && /评论有奖|抽奖|赢现金|有奖活动/.test(detail.article_title || '')) continue;
           content = String(article.content || (automatic ? this.buildCommentContent(detail, parseInt(key.slice(0, 4), 16) + state.attempts) : process.env.SMZDM_COMMENT || ''));
           if ((state.postedKeys || []).includes(crypto.createHash('sha256').update(id + '\n' + content).digest('hex'))) { content = ''; continue; }
@@ -341,7 +352,12 @@ class SmzdmCommentClient extends SmzdmBot {
           if (!current || Number(current.task_even_num) !== target || scopeKey(owner.commentTaskScope(current, content)) !== scopeKey(scope)) return stop('评论任务范围变化，停止发布');
           if (Number.isInteger(next) && next > count && next <= target) { count = next; break; }
         }
-        if (count <= state.awaitingCount.before) return stop(`评论已发布但计数未增长，当前 ${count}/${target}；可能自见或待审核，停止继续发布`);
+        if (count <= state.awaitingCount.before) {
+          if (automatic && scope.kind === 'general' && await this.getPublicCommentVisibility(id, state.awaitingCount.comment_id) === 1) {
+            retainSelfVisible(); continue;
+          }
+          return stop(`评论已发布但计数未增长，当前 ${count}/${target}；可能自见或待审核，停止继续发布`);
+        }
         state.awaitingCount = null; save(); this.$env.log(`评论任务已核实 ${count}/${target}`);
         if (count === target) return await claim();
       }
