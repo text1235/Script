@@ -162,7 +162,7 @@ class SmzdmTaskBot extends SmzdmBot {
     return { kind: 'general' };
   }
 
-  async getCommentArticles(scope) {
+  async getCommentArticles(scope, needed = 20) {
     const requestApi = (url, options) => this.getCommentClient().request(url, options);
     if (scope.kind === 'general') {
       const relatedTasks = await this.getCommentClient().getCommentTasks();
@@ -171,11 +171,16 @@ class SmzdmTaskBot extends SmzdmBot {
         const relatedScope = this.commentTaskScope(task, '');
         if (relatedScope.kind === 'article') relatedArticles.push(...await this.getCommentArticles(relatedScope));
       }
-      const { isSuccess, data } = await requestApi('https://article-api.smzdm.com/ranking_list/article_and_biji', {
-        headers: this.getHeaders(), retry: { limit: 0 }, timeout: { request: 15000 },
-        data: { tab: '2', order: '1', offset: 0, exclude_article_ids: '' }
-      });
-      return relatedArticles.concat(isSuccess && Array.isArray(data?.data?.rows) ? data.data.rows.slice(0, 20) : []);
+      const articles = [];
+      for (let offset = 0; offset < Math.max(20, needed); offset += 10) {
+        const { isSuccess, data } = await requestApi('https://article-api.smzdm.com/ranking_list/article_and_biji', {
+          headers: this.getHeaders(), retry: { limit: 0 }, timeout: { request: 15000 },
+          data: { tab: '2', order: '1', offset, exclude_article_ids: '' }
+        });
+        if (!isSuccess || !Array.isArray(data?.data?.rows) || !data.data.rows.length) break;
+        articles.push(...data.data.rows);
+      }
+      return articles.concat(relatedArticles);
     }
     if (scope.kind === 'column') return await this.getCommentClient().getArticleListFromLanmu(scope.id, 20);
     if (scope.kind === 'article') {
