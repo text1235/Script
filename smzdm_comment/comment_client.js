@@ -186,7 +186,7 @@ class SmzdmCommentClient extends SmzdmBot {
       if (encoded) { try { html = JSON.parse(Buffer.from(encoded[1], 'base64').toString('utf8')).article_html_content || ''; } catch (_) {} }
     }
     const text = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&(?:nbsp|amp|quot|lt|gt);/g, ' ').replace(/\s+/g, ' ').trim();
-    const excerpts = text.split(/[。！？\n]/).map(value => value.trim()).filter(value => value.length >= 15 && value.length <= 90);
+    const excerpts = text.split(/[。！？\n]/).map(value => value.replace(/#[^\s#]+/g, '').replace(/#/g, '').trim()).filter(value => value.length >= 15 && value.length <= 90);
     if (title.length < 5 || text.length < 80 || !excerpts.length) return '';
     const questions = ['想进一步了解，这一点在日常使用中有哪些适用条件？', '想请教一下，实际使用时有哪些容易忽略的限制？', '如果使用场景发生变化，这一点是否还适用，判断时应该注意什么？', '想了解有没有更具体的对比，能帮助判断这一点对实际体验的影响？', '选购时除了这一点，还应该结合哪些条件一起考虑？'];
     return `文中提到「${excerpts[variant % excerpts.length].slice(0, 60)}」。${questions[variant % questions.length]}`;
@@ -265,6 +265,10 @@ class SmzdmCommentClient extends SmzdmBot {
       if (state.day !== day) { state = { day, attempts: 0, uncreditedComments: state.uncreditedComments || [], postedKeys: state.postedKeys || [] }; save(); }
       if (state.blocked === '没有能匹配正文的评论文案，停止发布' && state.attempts === 0 && !state.pending && !state.awaitingCount) {
         state.preflightRecovery = { reason: state.blocked, at: new Date().toISOString() };
+        state.blocked = null; save();
+      }
+      if (state.blocked === '评论文案与任务范围未匹配' && !state.pending && !state.awaitingCount && owner.commentTaskScope(current, '').kind === 'general') {
+        state.scopeRecovery = { reason: state.blocked, attempts: state.attempts, task_id: current.task_id, at: new Date().toISOString() };
         state.blocked = null; save();
       }
       const claim = async () => {
