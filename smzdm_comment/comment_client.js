@@ -179,7 +179,17 @@ class SmzdmCommentClient extends SmzdmBot {
       ]]
     ];
     const match = rules.find(([pattern]) => pattern.test(title));
-    return match ? match[1][variant % match[1].length] : '';
+    if (match) return match[1][variant % match[1].length];
+    let html = String(detail.article_html_content || '');
+    if (!html && detail.html5_content) {
+      const encoded = String(detail.html5_content).match(/window\.pageData\s*=\s*JSON\.parse\(atob\(['"]([A-Za-z0-9+/=]+)['"]\)\)/);
+      if (encoded) { try { html = JSON.parse(Buffer.from(encoded[1], 'base64').toString('utf8')).article_html_content || ''; } catch (_) {} }
+    }
+    const text = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&(?:nbsp|amp|quot|lt|gt);/g, ' ').replace(/\s+/g, ' ').trim();
+    const excerpts = text.split(/[。！？\n]/).map(value => value.trim()).filter(value => value.length >= 15 && value.length <= 90);
+    if (title.length < 5 || text.length < 80 || !excerpts.length) return '';
+    const questions = ['想进一步了解，这一点在日常使用中有哪些适用条件？', '想请教一下，实际使用时有哪些容易忽略的限制？', '如果使用场景发生变化，这一点是否还适用，判断时应该注意什么？', '想了解有没有更具体的对比，能帮助判断这一点对实际体验的影响？', '选购时除了这一点，还应该结合哪些条件一起考虑？'];
+    return `文中提到「${excerpts[variant % excerpts.length].slice(0, 60)}」。${questions[variant % questions.length]}`;
   }
 
   async getPublicCommentVisibility(articleId, commentId) {
@@ -223,12 +233,12 @@ class SmzdmCommentClient extends SmzdmBot {
     const stop = reason => { state.blocked = reason; save(); return { isSuccess: false, reason }; };
     try {
       if (fs.existsSync(file)) state = JSON.parse(fs.readFileSync(file, 'utf8'));
-      const maxAttempts = options.maxAttempts === undefined ? 3 : Number(options.maxAttempts);
-      if (!Number.isInteger(maxAttempts) || maxAttempts < 3 || maxAttempts > 6) return stop('本次评论测试预算无效');
+      const maxAttempts = options.maxAttempts === undefined ? Infinity : Number(options.maxAttempts);
+      if (maxAttempts !== Infinity && (!Number.isInteger(maxAttempts) || maxAttempts < 1)) return stop('本次评论测试预算无效');
       let current = await this.getCommentTask(task.task_id);
       const target = Number(current?.task_even_num);
       let count = Number(current?.task_finished_num);
-      if (!current || !Number.isInteger(target) || target < 1 || target > 20 ||
+      if (!current || !Number.isInteger(target) || target < 1 ||
           !Number.isInteger(count) || count < 0 || count > target) return stop('任务进度无法核实，停止发布');
       const received = value => String(value?.is_received) === '1' && ['1', '4'].includes(String(value?.task_status));
       if (state.pending) {
@@ -279,7 +289,7 @@ class SmzdmCommentClient extends SmzdmBot {
       const scope = owner.commentTaskScope(current, overrides?.[0]?.content || (automatic ? '' : process.env.SMZDM_COMMENT || ''));
       if (scope.kind === 'blocked') return stop(scope.reason);
       if (overrides && scope.kind !== 'general') return stop('指定范围任务不能使用普通文章测试列表');
-      const articles = overrides || await owner.getCommentArticles(scope);
+      const articles = overrides || await owner.getCommentArticles(scope, target - count);
       if (!Array.isArray(articles) || !articles.length) return stop('未找到已核对的目标文章');
       const scopeKey = value => JSON.stringify([value.kind, value.id || '', value.channelId || '']);
       const remaining = Math.min(target - count, maxAttempts - state.attempts);
@@ -291,7 +301,9 @@ class SmzdmCommentClient extends SmzdmBot {
         for (let checked = 0; checked < articles.length; checked++) {
           article = articles[cursor++ % articles.length]; id = String(article.article_id || article.id || '');
           detail = await this.getArticleDetail(id);
-          if (!detail || String(detail.article_id) !== id) continue;
+          if (!detail || !/^[a-zA-Z0-9]+$/.test(String(detail.article_id || ''))) continue;
+          if (scope.kind === 'article' && String(detail.article_id) !== id) continue;
+          id = String(detail.article_id);
           if (scope.kind === 'general' && /评论有奖|抽奖|赢现金|有奖活动/.test(detail.article_title || '')) continue;
           content = String(article.content || (automatic ? this.buildCommentContent(detail, parseInt(key.slice(0, 4), 16) + state.attempts) : process.env.SMZDM_COMMENT || ''));
           if ((state.postedKeys || []).includes(crypto.createHash('sha256').update(id + '\n' + content).digest('hex'))) { content = ''; continue; }
@@ -329,7 +341,7 @@ class SmzdmCommentClient extends SmzdmBot {
         state.awaitingCount = null; save(); this.$env.log(`评论任务已核实 ${count}/${target}`);
         if (count === target) return await claim();
       }
-      return { isSuccess: false, reason: `评论进度 ${count}/${target}，按每日提交预算分次完成` };
+      return { isSuccess: false, reason: `评论进度 ${count}/${target}，本次执行尚未完成` };
     }
     finally { cleanup(); process.removeListener('exit', cleanup); process.removeListener('SIGTERM', onTerminate); }
   }
