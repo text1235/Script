@@ -13,6 +13,8 @@ class SmzdmTaskBot extends SmzdmBot {
   // 执行任务列表中的任务
   async doTasks(tasks) {
     let notifyMsg = '';
+    const comments = tasks.filter(task => task.task_event_type === 'interactive.comment').sort((a, b) => Number(a.task_even_num) - Number(b.task_even_num));
+    tasks = tasks.map(task => task.task_event_type === 'interactive.comment' ? comments.shift() : task);
 
     for (let i = 0; i < tasks.length; i++) {
       const task = tasks[i];
@@ -101,7 +103,7 @@ class SmzdmTaskBot extends SmzdmBot {
             const { isSuccess, reason } = await this.doCommentTask(task);
 
             notifyMsg += this.getTaskNotifyMessage(isSuccess, task);
-            if (reason) notifyMsg += reason + '\n';
+            if (reason) { notifyMsg += reason + '\n'; this.$env.log(`评论任务[${task.task_name}]: ${reason}`); }
 
             await wait(5, 15);
           }
@@ -140,6 +142,7 @@ class SmzdmTaskBot extends SmzdmBot {
     if (/(?:\u8bc4\u8bba|\u6587\u6848|\u5185\u5bb9).*(?:\u5305\u542b|\u5e26\u4e0a|\u8bdd\u9898\u6807\u7b7e)/.test(taskText)) {
       return { kind: 'blocked', reason: '\u4efb\u52a1\u8981\u6c42\u7279\u5b9a\u8bc4\u8bba\u5185\u5bb9\uff0c\u8bf7\u5148\u6838\u5bf9\u6587\u6848' };
     }
+    if (type === 'jingxuan' && /全站范围/.test(taskText)) return { kind: 'general' };
     if (['tag', 'theme', 'topic'].includes(type) || topicIds.length) {
       const ids = [positive(redirect.link_val), ...topicIds].filter(Boolean);
       if (columnIds.length || new Set(ids).size !== 1) return { kind: 'blocked', reason: '\u6307\u5b9a\u8bdd\u9898ID\u7f3a\u5931\u6216\u51b2\u7a81' };
@@ -150,7 +153,8 @@ class SmzdmTaskBot extends SmzdmBot {
       if (new Set(ids).size !== 1) return { kind: 'blocked', reason: '\u6307\u5b9a\u680f\u76eeID\u7f3a\u5931\u6216\u51b2\u7a81' };
       return { kind: 'column', id: ids[0], title: redirect.link_title || '' };
     }
-    const articleId = positive(task.article_id) || (['article', 'post', 'haojia'].includes(type) ? positive(redirect.link_val) : '');
+    const articleRef = ['article', 'post'].includes(type) && /^[a-zA-Z0-9]+$/.test(String(redirect.link_val || '')) ? String(redirect.link_val) : '';
+    const articleId = articleRef || positive(task.article_id) || (['article', 'post', 'haojia'].includes(type) ? positive(redirect.link_val) : '');
     if (articleId) return { kind: 'article', id: articleId, channelId: positive(task.channel_id) };
     if (!['', 'home'].includes(type) || /\u6307\u5b9a|\u8bdd\u9898|\u680f\u76ee|#[^#]+#/.test(taskText) || positive(redirect.link_val)) {
       return { kind: 'blocked', reason: '\u65e0\u6cd5\u786e\u8ba4\u6307\u5b9a\u8bc4\u8bba\u8303\u56f4\uff0c\u4e0d\u4f7f\u7528\u666e\u901a\u6587\u7ae0\u4ee3\u66ff' };
@@ -161,11 +165,17 @@ class SmzdmTaskBot extends SmzdmBot {
   async getCommentArticles(scope) {
     const requestApi = (url, options) => this.getCommentClient().request(url, options);
     if (scope.kind === 'general') {
+      const relatedTasks = await this.getCommentClient().getCommentTasks();
+      const relatedArticles = [];
+      for (const task of relatedTasks) {
+        const relatedScope = this.commentTaskScope(task, '');
+        if (relatedScope.kind === 'article') relatedArticles.push(...await this.getCommentArticles(relatedScope));
+      }
       const { isSuccess, data } = await requestApi('https://article-api.smzdm.com/ranking_list/article_and_biji', {
         headers: this.getHeaders(), retry: { limit: 0 }, timeout: { request: 15000 },
         data: { tab: '2', order: '1', offset: 0, exclude_article_ids: '' }
       });
-      return isSuccess && Array.isArray(data?.data?.rows) ? data.data.rows.slice(0, 20) : [];
+      return relatedArticles.concat(isSuccess && Array.isArray(data?.data?.rows) ? data.data.rows.slice(0, 20) : []);
     }
     if (scope.kind === 'column') return await this.getCommentClient().getArticleListFromLanmu(scope.id, 20);
     if (scope.kind === 'article') {
